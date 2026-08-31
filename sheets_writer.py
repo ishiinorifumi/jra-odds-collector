@@ -56,6 +56,21 @@ def open_sheet(spreadsheet_id):
     return client.open_by_key(spreadsheet_id)
 
 
+def estimate_cell_usage(sh):
+    """行データが乗っているシートの概算セル数を返す(セル数上限1,000万の早期警告用)。
+    実データ行数は列Aの非空セル数で数える(row_countはシートの割当グリッド数で
+    実データ数と厳密には一致しないため)。"""
+    total = 0
+    for title, header in [("tanpuku_odds", TANPUKU_HEADER), ("other_odds_raw", RAW_DUMP_HEADER)]:
+        try:
+            ws = sh.worksheet(title)
+        except gspread.exceptions.WorksheetNotFound:
+            continue
+        nrows = len(ws.col_values(1))
+        total += nrows * len(header)
+    return total
+
+
 def append_tanpuku_rows(sh, sheet_title, rows):
     """rows: TANPUKU_HEADERの順に対応するリストのリスト"""
     ws = get_or_create_worksheet(sh, sheet_title, TANPUKU_HEADER)

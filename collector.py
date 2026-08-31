@@ -179,6 +179,14 @@ def run(window):
     sh = sheets_writer.open_sheet(os.environ["ODDS_SPREADSHEET_ID"])
     sheets_writer.append_log(sh, "collection_log", "job_start", f"window={window}", now_jst_iso())
 
+    approx_cells = sheets_writer.estimate_cell_usage(sh)
+    if approx_cells > 8_000_000:
+        sheets_writer.append_log(
+            sh, "collection_log", "cell_budget_warning",
+            f"approx_cells={approx_cells} (上限1000万に接近。新しいスプレッドシートへの切替を検討)",
+            now_jst_iso(),
+        )
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_context(user_agent=UA).new_page()
