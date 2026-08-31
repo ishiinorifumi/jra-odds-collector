@@ -1,0 +1,67 @@
+name: Collect JRA odds
+
+on:
+  schedule:
+    # JSTの土日 8:00 / 13:00 に開始 (UTC = JST-9)
+    - cron: "0 23 * * 5"   # 土曜 8:00 JST (金曜23:00 UTC)
+    - cron: "0 4 * * 6"    # 土曜 13:00 JST
+    - cron: "0 23 * * 6"   # 日曜 8:00 JST
+    - cron: "0 4 * * 0"    # 日曜 13:00 JST
+  workflow_dispatch:
+    inputs:
+      window:
+        description: "am または pm"
+        required: true
+        default: "am"
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Determine window
+        id: win
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "window=${{ inputs.window }}" >> "$GITHUB_OUTPUT"
+          else
+            hour_utc=$(date -u +%H)
+            if [ "$hour_utc" = "23" ]; then
+              echo "window=am" >> "$GITHUB_OUTPUT"
+            else
+              echo "window=pm" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Run collector
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          ODDS_SPREADSHEET_ID: ${{ secrets.ODDS_SPREADSHEET_ID }}
+        run: python collector.py --window ${{ steps.win.outputs.window }}
+
+      - name: Archive raw HTML
+        if: always()
+        run: |
+          if [ -d raw_html ]; then
+            tar -czf raw_html_$(date +%Y%m%d_%H%M).tar.gz raw_html
+          fi
+
+      - name: Upload raw HTML artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-html-${{ steps.win.outputs.window }}-${{ github.run_id }}
+          path: raw_html_*.tar.gz
+          retention-days: 90
+          if-no-files-found: ignore

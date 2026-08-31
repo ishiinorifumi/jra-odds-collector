@@ -1,0 +1,5 @@
+raw_html/
+sample_*.html
+*.tar.gz
+__pycache__/
+*.pyc

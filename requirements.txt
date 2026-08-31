@@ -1,0 +1,5 @@
+playwright==1.62.0
+beautifulsoup4==4.15.0
+lxml
+gspread==6.2.1
+google-auth==2.57.0
