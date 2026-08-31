@@ -49,7 +49,7 @@ jobs:
       - name: Run collector
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+          ODDS_SPREADSHEET_ID: ${{ secrets.ODDS_SPREADSHEET_ID }}
         run: python collector.py --window ${{ steps.win.outputs.window }}
 
       - name: Archive raw HTML

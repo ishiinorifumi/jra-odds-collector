@@ -26,8 +26,6 @@ UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like 
 
 OFFSETS_MIN = [90, 60, 30, 10, 2]  # 発走何分前に取得するか
 
-OWNER_EMAIL = os.environ.get("OWNER_EMAIL") or None
-
 # 同時刻帯で複数件が重なった場合の取得優先度(E1/E3で必要な単勝複勝・馬連を優先)
 BETTYPE_PRIORITY = {"単勝複勝": 0, "馬連": 1, "ワイド": 2, "枠連": 3, "馬単": 4, "3連複": 5, "3連単": 6}
 
@@ -178,8 +176,7 @@ def run(window):
     window_start = today.replace(hour=start_t.hour, minute=start_t.minute, second=0, microsecond=0)
     window_end = today.replace(hour=end_t.hour, minute=end_t.minute, second=0, microsecond=0)
 
-    year_month = today.strftime("%Y%m")
-    sh = sheets_writer.open_monthly_sheet(year_month, owner_email=OWNER_EMAIL)
+    sh = sheets_writer.open_sheet(os.environ["ODDS_SPREADSHEET_ID"])
     sheets_writer.append_log(sh, "collection_log", "job_start", f"window={window}", now_jst_iso())
 
     with sync_playwright() as p:

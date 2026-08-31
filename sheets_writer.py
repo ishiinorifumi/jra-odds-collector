@@ -1,8 +1,15 @@
 """Googleスプレッドシートへの書き込み。サービスアカウントのJSON鍵を
 環境変数 GOOGLE_SERVICE_ACCOUNT_JSON (中身の文字列)から読み込む。
 
-セル数上限(1,000万)対策として、月が変わったら自動的に新しいスプレッドシートを
-作成して使う(命名規則: "{base_name}_{YYYYMM}")。
+スプレッドシート自体は事前にユーザー自身のGoogleアカウントで作成し、
+サービスアカウントに編集者権限を共有した上で、そのIDを環境変数
+ODDS_SPREADSHEET_ID として渡す(open_by_key)。サービスアカウントは
+Google WorkspaceのShared Drive配下でない限りDrive上の保存容量を
+一切持たないため、サービスアカウント自身によるスプレッドシート新規作成
+(client.create())は "Drive storage quota exceeded" で必ず失敗する。
+これはAPI有効化や権限設定では回避できない構造的な制約であり、
+月次の自動ローテーションはこの理由で採用していない
+(セル数上限との関係は README 参照)。
 """
 import os
 import json
@@ -11,7 +18,6 @@ from google.oauth2.service_account import Credentials
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive.file",
 ]
 
 TANPUKU_HEADER = [
@@ -27,8 +33,6 @@ RAW_DUMP_HEADER = [
 ]
 
 LOG_HEADER = ["captured_at", "event", "detail"]
-
-BASE_SPREADSHEET_NAME = "jra_odds"
 
 
 def get_client():
@@ -50,20 +54,6 @@ def get_or_create_worksheet(sh, title, header):
 def open_sheet(spreadsheet_id):
     client = get_client()
     return client.open_by_key(spreadsheet_id)
-
-
-def open_monthly_sheet(year_month: str, owner_email: str | None = None):
-    """year_month: "202609" のような6桁文字列。該当月のスプレッドシートが
-    Drive上になければ新規作成する(タイトル検索はgspreadのopen()がDrive経由で行う)。"""
-    client = get_client()
-    title = f"{BASE_SPREADSHEET_NAME}_{year_month}"
-    try:
-        sh = client.open(title)
-    except gspread.exceptions.SpreadsheetNotFound:
-        sh = client.create(title)
-        if owner_email:
-            sh.share(owner_email, perm_type="user", role="writer")
-    return sh
 
 
 def append_tanpuku_rows(sh, sheet_title, rows):
