@@ -79,11 +79,11 @@ def parse_combination_table(html, table_class_hint=None):
 
 def get_odds_status_label(html):
     """「最終オッズ」「中間オッズ」など、このページのオッズが
-    どの段階のものかを示すラベルを抽出する(取れなければNone)。"""
+    どの段階のものかを示すラベルを抽出する(取れなければ"unknown")。
+    発走前ページでの実際の表記は未確認のため、初回稼働時に実データで要検証。"""
     soup = BeautifulSoup(html, "html.parser")
-    el = soup.select_one(".odds_time, .lnk_odds_time, h2, h3")
     text = soup.get_text()
-    for label in ["最終オッズ", "確定オッズ", "中間オッズ"]:
+    for label in ["最終オッズ", "確定オッズ", "中間オッズ", "発売前", "発売中"]:
         if label in text:
             return label
-    return None
+    return "unknown"

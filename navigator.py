@@ -125,3 +125,30 @@ def list_races(html):
 def get_html(page, path, cname):
     do_action(page, path, cname)
     return page.content()
+
+
+def refresh_race_action(page, meeting, race_no, bet_type):
+    """cnameのchecksumが失効している可能性があるcapture失敗時に、
+    開催選択→レース選択を辿り直して該当レース・馬券種の最新(path, cname)を再取得する。
+    見つからなければNoneを返す。"""
+    goto_odds_top(page)
+    html_top = page.content()
+    meetings = list_meetings(html_top)
+    match = next(
+        (m for m in meetings
+         if m["course_code"] == meeting["course_code"]
+         and m["kaiji"] == meeting["kaiji"]
+         and m["nichiji"] == meeting["nichiji"]
+         and m["date"] == meeting["date"]),
+        None,
+    )
+    if match is None:
+        return None
+
+    html_races = get_html(page, match["path"], match["cname"])
+    races = list_races(html_races)
+    race_match = next((r for r in races if r["race_no"] == race_no), None)
+    if race_match is None:
+        return None
+
+    return race_match["bettypes"].get(bet_type)

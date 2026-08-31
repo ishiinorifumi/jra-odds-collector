@@ -8,31 +8,38 @@ PCを起動しておく必要はなく、費用も0円です。
 
 ### 1. Googleサービスアカウントの作成
 1. [Google Cloud Console](https://console.cloud.google.com/) で新規プロジェクトを作成（または既存のものを利用）
-2. 「APIとサービス」→「ライブラリ」から **Google Sheets API** を有効化
+2. 「APIとサービス」→「ライブラリ」から **Google Sheets API** と **Google Drive API** の両方を有効化
+   （月次スプレッドシートの自動作成にDrive APIを使うため）
 3. 「IAMと管理」→「サービスアカウント」→「作成」
 4. 作成したサービスアカウントの「鍵」タブから JSON鍵を作成・ダウンロード
 
-### 2. スプレッドシートの準備
-1. 記録用のGoogleスプレッドシートを新規作成
-2. 共有設定で、サービスアカウントのメールアドレス（`xxx@xxx.iam.gserviceaccount.com`）を
-   **編集者**として追加
-3. スプレッドシートのURLからIDを控える（`https://docs.google.com/spreadsheets/d/【ここ】/edit`）
-
-### 3. GitHub Secretsの設定
+### 2. GitHub Secretsの設定
 このリポジトリの Settings → Secrets and variables → Actions で以下を登録:
 - `GOOGLE_SERVICE_ACCOUNT_JSON`: ダウンロードしたJSON鍵ファイルの中身をそのまま貼り付け
-- `ODDS_SPREADSHEET_ID`: 上記で控えたスプレッドシートID
+- `OWNER_EMAIL`: 自分のGoogleアカウントのメールアドレス（月次スプレッドシートを
+  自動作成した際、このアドレスに編集者権限を自動付与するため。設定しないと
+  サービスアカウントしかアクセスできないファイルになってしまうので必須）
+
+スプレッドシートは**手動作成不要**です。月初に `jra_odds_YYYYMM`
+（例: `jra_odds_202609`）という名前で自動作成されます（セル数上限対策の月次ローテーション）。
 
 ## 動作の仕組み
-- GitHub Actionsが毎週土日の8:00/13:00(JST)に自動起動（`.github/workflows/collect.yml`）
+- GitHub Actionsが**毎日**8:00/13:00(JST)に自動起動（`.github/workflows/collect.yml`）。
+  開催日判定は「当日の開催がゼロなら即終了」で行うため、土日限定にせず祝日の
+  振替開催（月曜開催等）も取りこぼさない。平日はほぼ即終了するため無料枠への影響は無視できる
 - 起動直後にJRA公式サイトから当日の開催・レース一覧・発走時刻を取得
 - 各レースの発走90/60/30/10/2分前になるたびオッズを取得してスプレッドシートに追記
+  （同時刻帯に複数件が重なる場合は 単勝複勝→馬連→ワイド→その他 の順で取得）
+- 取得に失敗した場合、2回目以降のリトライでは開催選択→レース選択を辿り直してcnameを
+  再取得してから再試行する（cnameのchecksumが数時間後も有効かは未検証のため）
 - 生HTMLはActionsのartifact（90日保持）として別途保存（パーサーの不備に備えるため）
 
 ## 収集データ
-- `tanpuku_odds` シート: 単勝・複勝オッズ（構造化済み）
+- `tanpuku_odds` シート: 単勝・複勝オッズ（構造化済み。`capture_status`=取得成否、
+  `odds_status_label`=最終/中間等のオッズ段階ラベル）
 - `other_odds_raw` シート: 枠連・馬連・ワイド・馬単・3連複・3連単（JSON形式で生データ保存、今後構造化予定）
-- `collection_log` シート: 実行ログ（開始・終了・エラー）
+- `collection_log` シート: 実行ログ（開始・終了・エラー・各取得の所要時間・cname再取得の記録）
+  タイムスタンプは全てJST（ランナーの標準時ではない）
 
 ## 注意事項
 - JRA公式サイトの利用規約・robots.txtを確認済み（自動アクセスの明示的な禁止なし）

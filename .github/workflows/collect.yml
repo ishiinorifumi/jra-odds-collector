@@ -2,11 +2,11 @@ name: Collect JRA odds
 
 on:
   schedule:
-    # JSTの土日 8:00 / 13:00 に開始 (UTC = JST-9)
-    - cron: "0 23 * * 5"   # 土曜 8:00 JST (金曜23:00 UTC)
-    - cron: "0 4 * * 6"    # 土曜 13:00 JST
-    - cron: "0 23 * * 6"   # 日曜 8:00 JST
-    - cron: "0 4 * * 0"    # 日曜 13:00 JST
+    # 毎日 8:00 / 13:00 JST に起動 (UTC = JST-9)。土日限定にすると祝日の振替開催
+    # (月曜開催等)を取りこぼすため、平日は当日開催ゼロを検出して即終了する運用にする。
+    # パブリックリポジトリで標準ランナー無料枠は実質無制限のため平日分のコストは無視できる。
+    - cron: "0 23 * * *"   # 毎日 8:00 JST
+    - cron: "0 4 * * *"    # 毎日 13:00 JST
   workflow_dispatch:
     inputs:
       window:
@@ -36,18 +36,20 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "window=${{ inputs.window }}" >> "$GITHUB_OUTPUT"
           else
-            hour_utc=$(date -u +%H)
-            if [ "$hour_utc" = "23" ]; then
-              echo "window=am" >> "$GITHUB_OUTPUT"
-            else
-              echo "window=pm" >> "$GITHUB_OUTPUT"
-            fi
+            # 実行時刻(起動遅延の影響を受ける)ではなく、発火したcron式そのもので判定する。
+            # cronの遅延(10〜30分)によりUTC時刻ベースの判定だと誤判定するため。
+            schedule="${{ github.event.schedule }}"
+            case "$schedule" in
+              "0 23 * * *") echo "window=am" >> "$GITHUB_OUTPUT" ;;
+              "0 4 * * *")  echo "window=pm" >> "$GITHUB_OUTPUT" ;;
+              *) echo "unknown schedule: $schedule"; exit 1 ;;
+            esac
           fi
 
       - name: Run collector
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          ODDS_SPREADSHEET_ID: ${{ secrets.ODDS_SPREADSHEET_ID }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
         run: python collector.py --window ${{ steps.win.outputs.window }}
 
       - name: Archive raw HTML
