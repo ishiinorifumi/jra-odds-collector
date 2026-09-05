@@ -63,7 +63,10 @@ def list_meetings(html):
         if not action:
             continue
         path, cname = action
-        m = re.match(r"pw15orl10(\d{2})(\d{4})(\d{2})(\d{2})(\d{8})/", cname)
+        # 2026-09-05に実運用で確認: プレフィックスは"pw15orl10"固定ではなく
+        # 末尾2桁が可変("pw15orl00"等、時期により変わる可能性がある)。
+        # 該当部分は桁数のみ固定して受け入れる。
+        m = re.match(r"pw15orl\d{2}(\d{2})(\d{4})(\d{2})(\d{2})(\d{8})/", cname)
         if not m:
             continue
         course_code, year, kaiji, nichiji, date = m.groups()
