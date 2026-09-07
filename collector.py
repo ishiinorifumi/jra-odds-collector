@@ -45,7 +45,14 @@ def now_jst_iso():
 
 
 def parse_post_time(post_time_str, base_date_jst):
-    m = re.match(r"^(\d{1,2}):(\d{2})$", post_time_str.strip())
+    # 実サイトの表記は"10時40分"(漢字区切り)であり、開発時に想定していた
+    # "10:40"(コロン区切り)ではなかった。2026-09-05の本番初日、全レースが
+    # 発走時刻取得不可としてスキップされ続けた根本原因。念のためコロン区切りも
+    # フォールバックとして受け付ける。
+    s = post_time_str.strip()
+    m = re.match(r"^(\d{1,2})時(\d{2})分$", s)
+    if not m:
+        m = re.match(r"^(\d{1,2}):(\d{2})$", s)
     if not m:
         return None
     hh, mm = int(m.group(1)), int(m.group(2))

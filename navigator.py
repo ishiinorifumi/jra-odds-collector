@@ -86,7 +86,7 @@ def list_meetings(html):
 def list_races(html):
     """オッズレース選択ページのHTMLから、各レースの発走時刻と馬券種別ごとの
     doActionを抽出する。
-    戻り値: [{"race_no": "08", "post_time": "発走済" or "15:45",
+    戻り値: [{"race_no": "08", "post_time": "発走済" or "15時45分",
               "race_name": "...", "bettypes": {"単勝複勝": (path,cname), ...}}, ...]
     """
     soup = BeautifulSoup(html, "html.parser")
