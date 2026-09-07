@@ -2,22 +2,24 @@ name: Collect JRA odds
 
 on:
   schedule:
-    # 毎日 8:00 / 13:00 JST に起動 (UTC = JST-9)。土日限定にすると祝日の振替開催
+    # 毎日 21:00 UTC(=6:00 JST)に起動。土日限定にすると祝日の振替開催
     # (月曜開催等)を取りこぼすため、平日は当日開催ゼロを検出して即終了する運用にする。
     # パブリックリポジトリで標準ランナー無料枠は実質無制限のため平日分のコストは無視できる。
-    - cron: "0 23 * * *"   # 毎日 8:00 JST
-    - cron: "0 4 * * *"    # 毎日 13:00 JST
-  workflow_dispatch:
-    inputs:
-      window:
-        description: "am または pm"
-        required: true
-        default: "am"
+    #
+    # 2026-09-05/06の初回本番稼働で、am/pm 2分割方式(8:00/13:00 JST起動)は
+    # cron遅延がそれぞれ平均1.6時間・4.1〜4.4時間と判明し、pm側は実開始が
+    # 17時台になって発走時間帯を過ぎてしまい2日間とも収集0件だった。
+    # 1日1回・開催8:00より2時間早い6:00 JST起動に統合し、実測範囲の遅延
+    # (最大4時間台)があっても8:00の開催時間帯開始に間に合うようにする。
+    - cron: "0 21 * * *"
+  workflow_dispatch: {}
 
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 340
+    # 起動遅延を吸収しつつ8:00-18:30 JSTの全日ウィンドウをカバーするため
+    # 340分(旧am/pm個別枠)から750分(12.5時間)に拡張。
+    timeout-minutes: 750
     steps:
       - uses: actions/checkout@v4
 
@@ -30,27 +32,11 @@ jobs:
           pip install -r requirements.txt
           playwright install --with-deps chromium
 
-      - name: Determine window
-        id: win
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "window=${{ inputs.window }}" >> "$GITHUB_OUTPUT"
-          else
-            # 実行時刻(起動遅延の影響を受ける)ではなく、発火したcron式そのもので判定する。
-            # cronの遅延(10〜30分)によりUTC時刻ベースの判定だと誤判定するため。
-            schedule="${{ github.event.schedule }}"
-            case "$schedule" in
-              "0 23 * * *") echo "window=am" >> "$GITHUB_OUTPUT" ;;
-              "0 4 * * *")  echo "window=pm" >> "$GITHUB_OUTPUT" ;;
-              *) echo "unknown schedule: $schedule"; exit 1 ;;
-            esac
-          fi
-
       - name: Run collector
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           ODDS_SPREADSHEET_ID: ${{ secrets.ODDS_SPREADSHEET_ID }}
-        run: python collector.py --window ${{ steps.win.outputs.window }}
+        run: python collector.py
 
       - name: Archive raw HTML
         if: always()
@@ -63,7 +49,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: raw-html-${{ steps.win.outputs.window }}-${{ github.run_id }}
+          name: raw-html-${{ github.run_id }}
           path: raw_html_*.tar.gz
           retention-days: 90
           if-no-files-found: ignore

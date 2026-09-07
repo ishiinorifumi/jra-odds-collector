@@ -1,15 +1,21 @@
 """JRA公式サイトのオッズを、発走前の複数時点でスナップショット収集するメインスクリプト。
-GitHub Actionsから1日2回(午前/午後)起動され、それぞれのウィンドウ内で対象レースの
+GitHub Actionsから1日1回(早朝)起動され、開催日全体のウィンドウ内で対象レースの
 発走時刻に応じてsleepしながら定点観測する。
 
-使い方: python collector.py --window am|pm
+2026-09-05/06の初回本番稼働で、amトリガー(23:00 UTC)は平均1.6時間、
+pmトリガー(4:00 UTC)は平均4.1〜4.4時間というGitHub Actions側のcron遅延が
+実測された。pm窓(13:00-18:00 JST)は実開始が17時台になり、その時点で
+その日の全レースが終了済みのため2日間とも収集0件だった。am/pmの分割を
+やめ、1日1回・より早い時刻起動・単一の全日ウィンドウに統合することで、
+数時間規模の遅延があっても開催時間帯に間に合うようにする。
+
+使い方: python collector.py
 """
 import sys
 import os
 import re
 import json
 import time
-import argparse
 import datetime
 import zoneinfo
 
@@ -29,11 +35,9 @@ OFFSETS_MIN = [90, 60, 30, 10, 2]  # 発走何分前に取得するか
 # 同時刻帯で複数件が重なった場合の取得優先度(E1/E3で必要な単勝複勝・馬連を優先)
 BETTYPE_PRIORITY = {"単勝複勝": 0, "馬連": 1, "ワイド": 2, "枠連": 3, "馬単": 4, "3連複": 5, "3連単": 6}
 
-WINDOW_RANGES = {
-    # JRAのレースは概ね10時〜16時半に行われる。前半/後半で2ジョブに分割する。
-    "am": (datetime.time(8, 0), datetime.time(13, 0)),
-    "pm": (datetime.time(13, 0), datetime.time(18, 0)),
-}
+# JRAのレースは概ね10時〜16時半に行われる。cron遅延に対する耐性のため
+# am/pmに分割せず、開催日全体を1つの日次ジョブでカバーする。
+WINDOW_RANGE = (datetime.time(8, 0), datetime.time(18, 30))
 
 
 def now_jst():
@@ -177,14 +181,14 @@ def retry_with_refresh(page, item, sh, attempt):
     return capture(page, item, sh)
 
 
-def run(window):
-    start_t, end_t = WINDOW_RANGES[window]
+def run():
+    start_t, end_t = WINDOW_RANGE
     today = now_jst()
     window_start = today.replace(hour=start_t.hour, minute=start_t.minute, second=0, microsecond=0)
     window_end = today.replace(hour=end_t.hour, minute=end_t.minute, second=0, microsecond=0)
 
     sh = sheets_writer.open_sheet(os.environ["ODDS_SPREADSHEET_ID"])
-    sheets_writer.append_log(sh, "collection_log", "job_start", f"window={window}", now_jst_iso())
+    sheets_writer.append_log(sh, "collection_log", "job_start", "window=full", now_jst_iso())
 
     approx_cells = sheets_writer.estimate_cell_usage(sh)
     if approx_cells > 8_000_000:
@@ -204,12 +208,7 @@ def run(window):
         skipped_past = 0
 
         for item in schedule:
-            # 13:00ちょうどの境界がam/pm両方で二重取得されないよう、
-            # pm側の下限は厳密な不等号にする。
-            if window == "pm":
-                in_window = window_start < item["target_dt"] <= window_end
-            else:
-                in_window = window_start <= item["target_dt"] <= window_end
+            in_window = window_start <= item["target_dt"] <= window_end
             if not in_window:
                 continue
 
@@ -232,14 +231,11 @@ def run(window):
 
     sheets_writer.append_log(
         sh, "collection_log", "job_end",
-        f"window={window} planned={planned} done={done} skipped_past={skipped_past}",
+        f"planned={planned} done={done} skipped_past={skipped_past}",
         now_jst_iso(),
     )
     print(f"完了: planned={planned} done={done} skipped_past={skipped_past}")
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--window", choices=["am", "pm"], required=True)
-    args = ap.parse_args()
-    run(args.window)
+    run()
