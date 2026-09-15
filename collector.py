@@ -1,13 +1,24 @@
 """JRA公式サイトのオッズを、発走前の複数時点でスナップショット収集するメインスクリプト。
-GitHub Actionsから1日1回(早朝)起動され、開催日全体のウィンドウ内で対象レースの
-発走時刻に応じてsleepしながら定点観測する。
+GitHub Actionsから1日2回(早朝2トリガー)起動され、それぞれ「自分が実際に
+起動した時刻」から18:30 JSTまでを担当ウィンドウとしてsleepしながら定点観測する。
 
-2026-09-05/06の初回本番稼働で、amトリガー(23:00 UTC)は平均1.6時間、
-pmトリガー(4:00 UTC)は平均4.1〜4.4時間というGitHub Actions側のcron遅延が
-実測された。pm窓(13:00-18:00 JST)は実開始が17時台になり、その時点で
-その日の全レースが終了済みのため2日間とも収集0件だった。am/pmの分割を
-やめ、1日1回・より早い時刻起動・単一の全日ウィンドウに統合することで、
-数時間規模の遅延があっても開催時間帯に間に合うようにする。
+設計の経緯:
+1. 当初はam/pm 2ジョブ(8:00/13:00 JST起動)。pmトリガー(4:00 UTC)は
+   cron遅延が平均4.1〜4.4時間に達し、実開始が17時台(全レース終了後)に
+   なって2026-09-05/06の2日間とも収集0件だった
+2. 1日1回・6:00 JST起動・単一の全日ウィンドウ(8:00-18:30)に統合したが、
+   2026-09-12/13の本番運用で、GitHub Actions側にtimeout-minutes設定とは
+   別の**ジョブ実行時間の暗黙の上限(実測ちょうど6時間)**があることが判明。
+   6:00起動+遅延1.9時間で実開始7:55頃→6時間後の13:55に強制終了され、
+   24レース中4〜5レースぶんの終盤(15時台以降の重賞含む)を丸ごと
+   取りこぼした(それ以外は561件/日を欠測・エラーなく取得できていた)
+3. 6時間上限に収まりつつ全日をカバーするため、UTC 21:00と01:00の2トリガー
+   (約4時間差)に戻す。ただし各ジョブの担当ウィンドウは固定時刻ではなく
+   **「自分の実起動時刻」から18:30 JSTまで**とする(WINDOW_RANGEの下限を
+   固定せず動的にすることで、cron遅延の大小によらず2ジョブの担当範囲が
+   自然につながるようにする狙い)。重なった時間帯は両ジョブが同じ項目を
+   独立に取得しうる(スプレッドシート上で重複行になるが、欠測より無害と
+   判断し許容する)
 
 使い方: python collector.py
 """
@@ -35,9 +46,10 @@ OFFSETS_MIN = [90, 60, 30, 10, 2]  # 発走何分前に取得するか
 # 同時刻帯で複数件が重なった場合の取得優先度(E1/E3で必要な単勝複勝・馬連を優先)
 BETTYPE_PRIORITY = {"単勝複勝": 0, "馬連": 1, "ワイド": 2, "枠連": 3, "馬単": 4, "3連複": 5, "3連単": 6}
 
-# JRAのレースは概ね10時〜16時半に行われる。cron遅延に対する耐性のため
-# am/pmに分割せず、開催日全体を1つの日次ジョブでカバーする。
-WINDOW_RANGE = (datetime.time(8, 0), datetime.time(18, 30))
+# JRAのレースは概ね10時〜16時半に行われる。GitHub Actionsの実行時間上限
+# (実測6時間)に収まりつつ全日をカバーするため、ウィンドウ終了は固定18:30、
+# 開始は「このジョブが実際に起動した時刻」を動的に使う(下記run()参照)。
+WINDOW_END = datetime.time(18, 30)
 
 
 def now_jst():
@@ -182,10 +194,11 @@ def retry_with_refresh(page, item, sh, attempt):
 
 
 def run():
-    start_t, end_t = WINDOW_RANGE
     today = now_jst()
-    window_start = today.replace(hour=start_t.hour, minute=start_t.minute, second=0, microsecond=0)
-    window_end = today.replace(hour=end_t.hour, minute=end_t.minute, second=0, microsecond=0)
+    # ウィンドウ開始は「このジョブが実際に起動した時刻」そのもの。cron遅延の
+    # 大小によらず、起動後は直ちに担当範囲に入る(固定時刻を待って寝ない)。
+    window_start = today
+    window_end = today.replace(hour=WINDOW_END.hour, minute=WINDOW_END.minute, second=0, microsecond=0)
 
     sh = sheets_writer.open_sheet(os.environ["ODDS_SPREADSHEET_ID"])
     sheets_writer.append_log(sh, "collection_log", "job_start", "window=full", now_jst_iso())
