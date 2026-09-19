@@ -36,14 +36,16 @@ GitHub Actions上で自動収集し、Googleスプレッドシートに記録す
 - `ODDS_SPREADSHEET_ID`: 上で作成したスプレッドシートのID
 
 ## 動作の仕組み
-- GitHub Actionsが**毎日**21:00 UTC(=6:00 JST)に1回だけ自動起動する
-  （`.github/workflows/collect.yml`）。ジョブは起動した時刻から18:30 JSTまでを
-  担当し、GitHub Actionsのジョブ実行時間上限(実測6時間)に達する前(5時間30分経過時)に
+- **毎日6:30 JST前後**に、Google Apps Scriptの時間主導型トリガーが、GitHub REST APIで
+  このワークフローの`workflow_dispatch`を呼んで起動する(GitHub Actions自身のcronは
+  使わない。cronは遅延が予測できず1.6〜4.5時間ずれたため)。起動遅延は数秒
+  （`.github/workflows/collect.yml`）。ジョブは起動した時刻から18:30 JSTまでを担当し、
+  GitHub Actionsのジョブ実行時間上限(実測6時間)に達する前(5時間30分経過時)に
   **自分の後継ジョブをworkflow_dispatchで起動して引き継ぐ「リレー方式」**をとる
-  (5時間45分で終了)。cronは遅延が予測できない(1.6〜4.5時間)ため、2つ目のcronで
-  午後を担当させる設計では45分の空白ができた(2026-09-19)。workflow_dispatchの
-  起動遅延は数秒〜十数秒と小さい。重なる数分間は同じ項目が重複行になりうる
-  (欠測より無害と判断し許容)。詳細経緯は`collector.py`冒頭のコメント参照
+  (5時間45分で終了)。重なる数分間は同じ項目が重複行になりうる
+  (欠測より無害と判断し許容)。詳細経緯は`collector.py`冒頭のコメント参照。
+  GAS側のコードは`gas/dispatch.gs`にある(トークンはGASのスクリプトプロパティ`GH_TOKEN`。
+  Fine-grained PAT、対象リポジトリのみ、`Actions: Read and write`だけ)
   開催日判定は「当日の開催がゼロなら即終了」で行うため、土日限定にせず祝日の
   振替開催（月曜開催等）も取りこぼさない。平日はほぼ即終了するため無料枠への影響は無視できる
 - 起動直後にJRA公式サイトから当日の開催・レース一覧・発走時刻を取得
