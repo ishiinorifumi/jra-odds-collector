@@ -12,13 +12,20 @@ GitHub Actionsから1日2回(早朝2トリガー)起動され、それぞれ「�
    6:00起動+遅延1.9時間で実開始7:55頃→6時間後の13:55に強制終了され、
    24レース中4〜5レースぶんの終盤(15時台以降の重賞含む)を丸ごと
    取りこぼした(それ以外は561件/日を欠測・エラーなく取得できていた)
-3. 6時間上限に収まりつつ全日をカバーするため、UTC 21:00と01:00の2トリガー
-   (約4時間差)に戻す。ただし各ジョブの担当ウィンドウは固定時刻ではなく
-   **「自分の実起動時刻」から18:30 JSTまで**とする(WINDOW_RANGEの下限を
-   固定せず動的にすることで、cron遅延の大小によらず2ジョブの担当範囲が
-   自然につながるようにする狙い)。重なった時間帯は両ジョブが同じ項目を
-   独立に取得しうる(スプレッドシート上で重複行になるが、欠測より無害と
-   判断し許容する)
+3. UTC 21:00と01:00の2トリガー(約4時間差)に戻し、各ジョブの担当ウィンドウ開始を
+   「自分の実起動時刻」にした。しかし2026-09-19(土)、01:00 UTCトリガーが
+   4.5時間遅延(14:29 JST起動)し、21:00 UTCトリガーのジョブは自前の
+   355分タイムアウトで13:50に終了したため、**13:50〜14:35の45分間はどちらの
+   ジョブも動いておらず**、120時点中11時点(中山11R/阪神11Rの90分前を含む)を
+   取りこぼした。cron遅延は予測できないため、2つ目のcronに頼る設計自体を
+   やめた
+4. 現行設計(リレー方式): cronは1本(21:00 UTC)のみ。ジョブは5時間30分経過した
+   時点で自分の後継ジョブをworkflow_dispatchで起動し(workflow_dispatchの
+   起動遅延は数秒〜十数秒でcronと違い小さい)、5時間45分で担当を引き継いで
+   終了する。後継は自分の起動時刻から18:30 JSTまでを担当する。重なる数分間だけ
+   同じ項目を両ジョブが取得しうる(重複行は欠測より無害)。標準出力は
+   行バッファ化しており、強制終了時にログが欠落しない(9/12-19のログは
+   ブロックバッファのため一部欠落していた)
 
 使い方: python collector.py
 """
@@ -27,10 +34,11 @@ import os
 import re
 import json
 import time
+import subprocess
 import datetime
 import zoneinfo
 
-sys.stdout.reconfigure(encoding="utf-8")
+sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
 
 from playwright.sync_api import sync_playwright
 
@@ -50,6 +58,12 @@ BETTYPE_PRIORITY = {"単勝複勝": 0, "馬連": 1, "ワイド": 2, "枠連": 3,
 # (実測6時間)に収まりつつ全日をカバーするため、ウィンドウ終了は固定18:30、
 # 開始は「このジョブが実際に起動した時刻」を動的に使う(下記run()参照)。
 WINDOW_END = datetime.time(18, 30)
+
+# リレー: 後継ジョブの起動(セットアップに約4分)と引き継ぎ。ジョブ自体は355分
+# (=21300秒)でタイムアウトするので、スクリプト起動が数分遅れることを見込んで余裕を持つ。
+# 動作確認用に環境変数で短縮できる(workflow_dispatchのrelay_testで使用)。
+RELAY_DISPATCH_SEC = int(os.environ.get("RELAY_DISPATCH_SEC") or 5 * 3600 + 30 * 60)
+RELAY_STOP_SEC = int(os.environ.get("RELAY_STOP_SEC") or 5 * 3600 + 45 * 60)
 
 
 def now_jst():
@@ -193,6 +207,24 @@ def retry_with_refresh(page, item, sh, attempt):
     return capture(page, item, sh)
 
 
+def dispatch_successor(sh):
+    """後継ジョブをworkflow_dispatchで起動する。成功したらTrue。"""
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    cmd = ["gh", "workflow", "run", "collect.yml"] + (["--repo", repo] if repo else [])
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        ok = r.returncode == 0
+        detail = (r.stdout + r.stderr).strip()[:300]
+    except Exception as e:
+        ok, detail = False, str(e)[:300]
+    sheets_writer.append_log(
+        sh, "collection_log", "relay_dispatch_ok" if ok else "relay_dispatch_failed",
+        detail, now_jst_iso(),
+    )
+    print(f"  リレー: 後継ジョブ起動 {'成功' if ok else '失敗'} {detail}")
+    return ok
+
+
 def run():
     today = now_jst()
     # ウィンドウ開始は「このジョブが実際に起動した時刻」そのもの。cron遅延の
@@ -220,6 +252,10 @@ def run():
         done = 0
         skipped_past = 0
 
+        job_t0 = time.monotonic()
+        relayed = False
+        relay_attempts = 0
+
         for item in schedule:
             in_window = window_start <= item["target_dt"] <= window_end
             if not in_window:
@@ -229,6 +265,23 @@ def run():
             if wait_sec < -120:
                 skipped_past += 1
                 continue
+
+            # リレー: 実行時間の上限(実測6時間)が近い、または次の項目が担当時間の
+            # 終わりより後なら、後継ジョブを起動して残りを引き継ぐ。
+            elapsed = time.monotonic() - job_t0
+            due_after = elapsed + max(wait_sec, 0)
+            if (elapsed >= RELAY_DISPATCH_SEC or due_after >= RELAY_STOP_SEC)                     and not relayed and relay_attempts < 3:
+                relay_attempts += 1
+                relayed = dispatch_successor(sh)
+            if relayed and due_after >= RELAY_STOP_SEC:
+                sheets_writer.append_log(
+                    sh, "collection_log", "relay_handoff",
+                    f"elapsed={elapsed:.0f}s next_due={item['target_dt'].isoformat()}",
+                    now_jst_iso(),
+                )
+                print(f"  リレー: 引き継ぎのため終了(次の項目 {item['target_dt']:%H:%M})")
+                break
+
             if wait_sec > 0:
                 time.sleep(min(wait_sec, 6 * 3600))
 
