@@ -3,13 +3,17 @@
 確認済みのため、必ずPlaywrightの実ページコンテキスト上でdoAction()を呼び出すこと。
 
 cnameの構造は解析済み:
-  開催: pw15orl10 + 場コード(2) + 年(4) + 回次(2) + 日次(2) + 日付8桁 + "/" + checksum(2)
+  開催: pw15orl(00|10) + 場コード(2) + 年(4) + 回次(2) + 日次(2) + 日付8桁 + "/" + checksum(2)
   レース+単勝複勝: pw151ou10 + 場コード(2) + 年(4) + 回次(2) + 日次(2) + レース番号(2) + 日付8桁 + "Z/" + checksum(2)
+  ※開催のcname先頭の"00"/"10"は開催の状態で変わる(これから始まる開催=00、開催済み=10。
+  2026-09-05に10固定で実装して全開催を見落とした)
   枠連=pw153ou.. 馬連=pw154ou.. ワイド=pw155ou.. 馬単=pw156ou.. 3連複=pw157ou.. 3連単=pw158ou..
 checksumはサーバー生成で予測不可能なため、必ず前段のページから実際に抽出すること。
 """
 import re
+import time
 from bs4 import BeautifulSoup
+from playwright.sync_api import TimeoutError as PWTimeoutError
 
 DOACTION_RE = re.compile(r"doAction\('([^']+)'\s*,\s*'([^']+)'\)")
 
@@ -32,14 +36,41 @@ BETTYPE_CLASS_TO_LABEL = {
 }
 
 
+def _soft_networkidle(page, timeout=15000):
+    """networkidleに達するのを待つが、達しなくても失敗にしない。
+    JRAのページはバックグラウンド通信が続き、networkidleに達しないことがある
+    (2026-09-15/20の朝、トップページのgoto(networkidle)が30秒でタイムアウトし、
+    再試行の仕組みがなかったため当日の収集が始まらなかった)。ナビゲーション自体は
+    domcontentloadedで成立しており、page.content()は取得できる。"""
+    try:
+        page.wait_for_load_state("networkidle", timeout=timeout)
+    except PWTimeoutError:
+        pass
+
+
 def do_action(page, path, cname):
-    with page.expect_navigation(wait_until="networkidle"):
+    # doAction()は共通JSで定義されるため、domcontentloaded直後でも使えることを確認してから呼ぶ
+    page.wait_for_function("typeof doAction === 'function'", timeout=30000)
+    with page.expect_navigation(wait_until="domcontentloaded", timeout=60000):
         page.evaluate("([p, c]) => doAction(p, c)", [path, cname])
+    _soft_networkidle(page)
 
 
-def goto_odds_top(page):
-    page.goto("https://www.jra.go.jp/", wait_until="networkidle")
-    do_action(page, ODDS_ENTRY_PATH, ODDS_ENTRY_CNAME)
+def goto_odds_top(page, attempts=4):
+    """JRAトップ→オッズ開催選択ページへ。一時的な失敗は間隔を空けて再試行する。"""
+    last = None
+    for i in range(attempts):
+        try:
+            page.goto("https://www.jra.go.jp/", wait_until="domcontentloaded", timeout=60000)
+            _soft_networkidle(page)
+            do_action(page, ODDS_ENTRY_PATH, ODDS_ENTRY_CNAME)
+            return
+        except PWTimeoutError as e:
+            last = e
+            print(f"  [retry] goto_odds_top {i + 1}/{attempts} 失敗: {str(e)[:100]}")
+            if i < attempts - 1:
+                time.sleep(10 * (i + 1))
+    raise last
 
 
 def _extract_action(onclick_or_href):

@@ -227,6 +227,8 @@ def dispatch_successor(sh):
 
 
 def run():
+    if os.environ.get("FORCE_FAIL"):
+        raise RuntimeError("FORCE_FAIL: 自動再起動の動作確認用の意図的な失敗")
     today = now_jst()
     # ウィンドウ開始は「このジョブが実際に起動した時刻」そのもの。cron遅延の
     # 大小によらず、起動後は直ちに担当範囲に入る(固定時刻を待って寝ない)。
@@ -248,7 +250,16 @@ def run():
         browser = p.chromium.launch(headless=True)
         page = browser.new_context(user_agent=UA).new_page()
 
-        schedule = build_schedule(page, today)
+        schedule = None
+        for build_try in range(3):
+            try:
+                schedule = build_schedule(page, today)
+                break
+            except Exception as e:
+                print(f"  [retry] build_schedule {build_try + 1}/3 失敗: {str(e)[:120]}")
+                if build_try == 2:
+                    raise
+                time.sleep(30 * (build_try + 1))
         planned = len(schedule)
         done = 0
         skipped_past = 0
@@ -287,7 +298,13 @@ def run():
                 time.sleep(min(wait_sec, 6 * 3600))
 
             for attempt in range(3):
-                ok = retry_with_refresh(page, item, sh, attempt)
+                try:
+                    ok = retry_with_refresh(page, item, sh, attempt)
+                except Exception as e:
+                    # 1項目の失敗(Sheetsの瞬断、ページ遷移の失敗等)でジョブ全体を落とさない
+                    print(f"  [error] {item['meeting']['meeting_label']} {item['race']['race_no']}R "
+                          f"{item['bet_type']} attempt={attempt}: {str(e)[:150]}")
+                    ok = False
                 if ok:
                     done += 1
                     break

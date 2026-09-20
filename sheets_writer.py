@@ -13,7 +13,9 @@ Google WorkspaceのShared Drive配下でない限りDrive上の保存容量を
 """
 import os
 import json
+import time
 import gspread
+import requests
 from google.oauth2.service_account import Credentials
 
 SCOPES = [
@@ -35,6 +37,28 @@ RAW_DUMP_HEADER = [
 LOG_HEADER = ["captured_at", "event", "detail"]
 
 
+TRANSIENT_HTTP = {429, 500, 502, 503, 504}
+
+
+def _with_retry(fn, *args, attempts=6, **kwargs):
+    """Sheets APIの一時的な失敗(429/5xx/接続断)を指数バックオフで再試行する。
+    2026-09-06にAPIError 503でジョブが即死した。1回の瞬断でその日の収集が
+    止まらないようにする。"""
+    for i in range(attempts):
+        try:
+            return fn(*args, **kwargs)
+        except gspread.exceptions.APIError as e:
+            code = getattr(e, "code", None)
+            if code is None:
+                code = getattr(getattr(e, "response", None), "status_code", None)
+            if code not in TRANSIENT_HTTP or i == attempts - 1:
+                raise
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            if i == attempts - 1:
+                raise
+        time.sleep(min(5 * 2 ** i, 60))
+
+
 def get_client():
     raw = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
     info = json.loads(raw)
@@ -42,18 +66,27 @@ def get_client():
     return gspread.authorize(creds)
 
 
+_ws_cache = {}
+
+
 def get_or_create_worksheet(sh, title, header):
+    # worksheet()は毎回メタデータ取得のAPI呼び出しを伴うため、プロセス内でキャッシュして
+    # 読み取りクォータ(60回/分/ユーザー)への圧迫を減らす
+    key = (sh.id, title)
+    if key in _ws_cache:
+        return _ws_cache[key]
     try:
-        ws = sh.worksheet(title)
+        ws = _with_retry(sh.worksheet, title)
     except gspread.exceptions.WorksheetNotFound:
-        ws = sh.add_worksheet(title=title, rows=1000, cols=len(header) + 2)
-        ws.append_row(header)
+        ws = _with_retry(sh.add_worksheet, title=title, rows=1000, cols=len(header) + 2)
+        _with_retry(ws.append_row, header)
+    _ws_cache[key] = ws
     return ws
 
 
 def open_sheet(spreadsheet_id):
     client = get_client()
-    return client.open_by_key(spreadsheet_id)
+    return _with_retry(client.open_by_key, spreadsheet_id)
 
 
 def estimate_cell_usage(sh):
@@ -63,10 +96,10 @@ def estimate_cell_usage(sh):
     total = 0
     for title, header in [("tanpuku_odds", TANPUKU_HEADER), ("other_odds_raw", RAW_DUMP_HEADER)]:
         try:
-            ws = sh.worksheet(title)
+            ws = _with_retry(sh.worksheet, title)
         except gspread.exceptions.WorksheetNotFound:
             continue
-        nrows = len(ws.col_values(1))
+        nrows = len(_with_retry(ws.col_values, 1))
         total += nrows * len(header)
     return total
 
@@ -75,18 +108,18 @@ def append_tanpuku_rows(sh, sheet_title, rows):
     """rows: TANPUKU_HEADERの順に対応するリストのリスト"""
     ws = get_or_create_worksheet(sh, sheet_title, TANPUKU_HEADER)
     if rows:
-        ws.append_rows(rows, value_input_option="USER_ENTERED")
+        _with_retry(ws.append_rows, rows, value_input_option="USER_ENTERED")
 
 
 def append_log(sh, sheet_title, event, detail, captured_at_jst):
     """captured_at_jst: 呼び出し側でJSTのisoformat文字列を渡すこと
     (ランナーの標準時(UTC)と混在させないため)。"""
     ws = get_or_create_worksheet(sh, sheet_title, LOG_HEADER)
-    ws.append_row([captured_at_jst, event, detail], value_input_option="USER_ENTERED")
+    _with_retry(ws.append_row, [captured_at_jst, event, detail], value_input_option="USER_ENTERED")
 
 
 def append_raw_dump(sh, sheet_title, rows):
     """馬連・ワイド等、汎用行ダンプ用。可変長なので1セルにJSON文字列で保存する。"""
     ws = get_or_create_worksheet(sh, sheet_title, RAW_DUMP_HEADER)
     if rows:
-        ws.append_rows(rows, value_input_option="USER_ENTERED")
+        _with_retry(ws.append_rows, rows, value_input_option="USER_ENTERED")

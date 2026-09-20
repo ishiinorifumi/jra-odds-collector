@@ -24,6 +24,14 @@ on:
         description: "リレー動作確認用(2分後に後継を起動し4分で終了する)"
         type: boolean
         default: false
+      force_fail:
+        description: "自動再起動の動作確認用(意図的に失敗させる)"
+        type: boolean
+        default: false
+      attempt:
+        description: "自動再起動の回数(内部用。手動では触らない)"
+        type: string
+        default: "0"
 
 permissions:
   contents: read
@@ -54,6 +62,7 @@ jobs:
           PYTHONUNBUFFERED: "1"
           RELAY_DISPATCH_SEC: ${{ inputs.relay_test && '120' || '' }}
           RELAY_STOP_SEC: ${{ inputs.relay_test && '240' || '' }}
+          FORCE_FAIL: ${{ inputs.force_fail && '1' || '' }}
         run: python collector.py
 
       - name: Archive raw HTML
@@ -71,3 +80,17 @@ jobs:
           path: raw_html_*.tar.gz
           retention-days: 90
           if-no-files-found: ignore
+
+      # 途中で落ちた場合(JRAサイトの一時的な不調、Sheets APIの障害など)は、
+      # 少し待って自分を再起動する。2026-09-20(日)は朝の起動時にJRAトップの読み込みが
+      # タイムアウトして失敗し、再試行の仕組みがなかったため1日分を丸ごと失った。
+      # 無限に繰り返さないよう最大3回まで(attemptで数える)。キャンセルや
+      # タイムアウトでは動かない(failure()のみ)。
+      - name: Restart on failure
+        if: failure() && fromJSON(inputs.attempt || '0') < 3
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          next=$(( ${{ inputs.attempt || 0 }} + 1 ))
+          sleep $(( next * 120 ))
+          gh workflow run collect.yml --repo "$GITHUB_REPOSITORY" -f attempt=$next
