@@ -1,4 +1,5 @@
 """オッズ表示ページのHTMLから、実際のオッズ数値を抽出する。"""
+import re
 from bs4 import BeautifulSoup
 
 
@@ -77,13 +78,36 @@ def parse_combination_table(html, table_class_hint=None):
     return result
 
 
+_STATUS_TS_RE = re.compile(r"(\d{1,2})時(\d{1,2})分現在オッズ")
+
+
 def get_odds_status_label(html):
-    """「最終オッズ」「中間オッズ」など、このページのオッズが
-    どの段階のものかを示すラベルを抽出する(取れなければ"unknown")。
-    発走前ページでの実際の表記は未確認のため、初回稼働時に実データで要検証。"""
+    """このページのオッズがどの時点のものかを示すラベルを抽出する。
+
+    2026-09-19〜22の実データで確認した結果、発走前ページの実表記は
+    「X時Y分現在オッズ」という更新時刻つきの表示であり、固定文言の
+    「最終オッズ」「中間オッズ」等ではなかった(これらの語は発売締切後の
+    挙動を説明する脚注テキストにのみ含まれており、旧実装はそこに常に
+    誤マッチして発走90分前も含め全時点で「最終オッズ」を返していた)。
+
+    戻り値は "HH:MM現在" 形式(サイト自身が「この時点のオッズ」として
+    示す時刻。当方の取得時刻とのズレ=サイト側の更新遅延の目安になる)、
+    または決着後ページで実際に確認した「最終オッズ」。発売締切直後〜決着前の
+    状態(推測: 「発売締切」等)は未確認。どれにも一致しなければ"unknown"。"""
     soup = BeautifulSoup(html, "html.parser")
-    text = soup.get_text()
-    for label in ["最終オッズ", "確定オッズ", "中間オッズ", "発売前", "発売中"]:
-        if label in text:
+    # ページ末尾の注記(div.caution、「発売締切直後に表示される最終オッズは...」)に
+    # "確定オッズ"以外の探索語がすべて含まれており、素のテキスト検索だと常に
+    # ここへ誤マッチする。注記を木から除去してから、本来の更新時刻表示
+    # (div.refresh_line内)に絞って検索する。
+    caution = soup.select_one("div.caution")
+    if caution is not None:
+        caution.decompose()
+    refresh = soup.select_one("div.refresh_line")
+    scope_text = refresh.get_text() if refresh is not None else soup.get_text()
+    for label in ["確定オッズ", "最終オッズ", "発売締切"]:
+        if label in scope_text:
             return label
+    m = _STATUS_TS_RE.search(scope_text)
+    if m:
+        return f"{int(m.group(1)):02d}:{int(m.group(2)):02d}現在"
     return "unknown"

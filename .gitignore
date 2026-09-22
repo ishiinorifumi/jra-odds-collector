@@ -3,3 +3,4 @@ sample_*.html
 *.tar.gz
 __pycache__/
 *.pyc
+confirmed_odds_*.csv
